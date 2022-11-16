@@ -1,4 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS
+#define BUFF_SIZE 10000
 #include <stdio.h>
 #include <Windows.h>
 #include <Psapi.h>
@@ -10,21 +11,24 @@ HANDLE getProcessList(void);
 BOOL ListProcessModules(DWORD dwPID);
 BOOL ListProcessThreads(DWORD dwOwnerPID);
 BOOL getProcessInfo(HANDLE hProcessSnap, unsigned int PID);
+BOOL getMemoryData(void);
 void printError(TCHAR* msg);
 
 int main(void)
 {
     HANDLE hProcessSnap;
 	unsigned int selection = 0;
+    // add loop for menu here
+	//selection = menu();
 
-	selection = menu();
-	if (selection == '1')
+    selection = 1;
+	if (selection == 1)
 	{
-		printf("\n[+] Getting the list of processes now!\n");
-        selection = 0;
+		//printf("\n[+] Getting the list of processes now!\n");
+        //selection = 0;
 		hProcessSnap = getProcessList();
-        printf("\n[+] Enter PID to get data for: ");
-        scanf("%d", &selection);
+        //printf("\n[+] Enter PID to get data for: ");
+        //scanf("%d", &selection);
         getProcessInfo(hProcessSnap, selection);
 
 	}
@@ -36,6 +40,7 @@ int main(void)
 	{
 		printf("Error!\n");
 	}
+
 	return 0;
 }
 
@@ -61,9 +66,20 @@ int menu(void)
 
 BOOL getProcessInfo(HANDLE hProcessSnap, unsigned int PID)
 {
+    BOOL match_found = FALSE;
+    unsigned char buff[BUFF_SIZE * sizeof(DWORD)] = {0};
     PROCESSENTRY32 pe32;
+    PROCESSENTRY32 pe32Parent;
+    MODULEENTRY32 me32;
+    HANDLE hModuleSnap = INVALID_HANDLE_VALUE;
     HANDLE hProcess;
+    HANDLE hParentProcessSnap;
+    FILE* outfile;
+    hParentProcessSnap = hProcessSnap;
+    long unsigned int cBytesRead = 0;
     DWORD dwPriorityClass;
+
+    //outfile = fopen("MemDump-Debug.txt", "w");
 
     if (hProcessSnap == INVALID_HANDLE_VALUE)
     {
@@ -73,6 +89,7 @@ BOOL getProcessInfo(HANDLE hProcessSnap, unsigned int PID)
 
     // Set the size of the structure before using it.
     pe32.dwSize = sizeof(PROCESSENTRY32);
+    pe32Parent.dwSize = sizeof(PROCESSENTRY32);
 
     // Retrieve information about the first process,
     // and exit if unsuccessful
@@ -82,43 +99,129 @@ BOOL getProcessInfo(HANDLE hProcessSnap, unsigned int PID)
         CloseHandle(hProcessSnap);          // clean the snapshot object
         return(FALSE);
     }
-    while (pe32.th32ProcessID != PID)
+    while (match_found == FALSE)
     {
-        Process32Next(hProcessSnap, &pe32);
-
+        if (strcmp(pe32.szExeFile, L"THGoat.exe") == 0)
+        {
+            match_found = TRUE;
+        }
+        else
+        {
+            if (Process32Next(hProcessSnap, &pe32) == FALSE)
+            {
+                break;
+            }
+        }
     }
 
-    _tprintf(TEXT("\n%s\t\t [%d]"), pe32.szExeFile, pe32.th32ProcessID);
-    // Retrieve the priority class.
-    dwPriorityClass = 0;
-    hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pe32.th32ProcessID);
-    if (hProcess == NULL)
-        printError(TEXT("OpenProcess"));
+   // Retrieve information about the first process to be able to iterate through
+   // and exit if unsuccessful
+    if (!Process32First(hParentProcessSnap, &pe32Parent))
+    {
+        printError(TEXT("Process32First")); // show cause of failure
+        CloseHandle(hParentProcessSnap);          // clean the snapshot object
+        return(FALSE);
+    }
+    match_found = FALSE;
+    while (match_found == FALSE)
+    {
+        if (strcmp(pe32Parent.szExeFile, L"THGoat.exe") == 0)
+        {
+            match_found = TRUE;
+        }
+        else
+        {
+            if (Process32Next(hParentProcessSnap, &pe32Parent) == FALSE)
+            {
+                break;
+            }
+        }
+    }
+    if (match_found)
+    {
+        _tprintf(TEXT("\n%s\t\t [%d]"), pe32.szExeFile, pe32.th32ProcessID);
+        // Retrieve the priority class.
+        dwPriorityClass = 0;
+        hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pe32.th32ProcessID);
+        //hParentProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pe32.th32ParentProcessID);
+        if (hProcess == NULL)
+            printError(TEXT("OpenProcess"));
+        else
+        {
+            dwPriorityClass = GetPriorityClass(hProcess);
+            if (!dwPriorityClass)
+                printError(TEXT("GetPriorityClass"));
+            CloseHandle(hProcess);
+        }
+
+        _tprintf(TEXT("\n  Process ID        = 0x%08X"), pe32.th32ProcessID);
+        _tprintf(TEXT("\n  Thread count      = %d"), pe32.cntThreads);
+        _tprintf(TEXT("\n  Parent process ID = 0x%08X (%s)"), pe32.th32ParentProcessID, pe32Parent.szExeFile);
+        _tprintf(TEXT("\n  Priority base     = %d"), pe32.pcPriClassBase);
+        if (dwPriorityClass)
+        {
+            _tprintf(TEXT("\n  Priority class    = %d"), dwPriorityClass);
+        }
+        // List the modules and threads associated with this process
+        //ListProcessModules(pe32.th32ProcessID);
+        //ListProcessThreads(pe32.th32ProcessID);
+        hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pe32.th32ProcessID);
+        if (hModuleSnap == INVALID_HANDLE_VALUE)
+        {
+            printError(TEXT("CreateToolhelp32Snapshot (of modules)"));
+            return(FALSE);
+        }
+
+        // Set the size of the structure before using it.
+        me32.dwSize = sizeof(MODULEENTRY32);
+
+        // Retrieve information about the first module,
+        // and exit if unsuccessful
+        if (!Module32First(hModuleSnap, &me32))
+        {
+            printError(TEXT("Module32First"));  // show cause of failure
+            CloseHandle(hModuleSnap);           // clean the snapshot object
+            return(FALSE);
+        }
+        if (Toolhelp32ReadProcessMemory(pe32.th32ProcessID, me32.modBaseAddr, &buff, (BUFF_SIZE * sizeof(DWORD)) - 3, &cBytesRead) == TRUE)
+        {
+            printf("\nBytes read: %d\n", cBytesRead);
+            FILE* fp;
+            fp = fopen("MemDump.txt", "wb+");
+
+            for (int i = 0; i < BUFF_SIZE * sizeof(DWORD) - 3; i += 16)
+            {
+                for (int j = 0; j < 16; j++)
+                {
+                    fprintf(fp, "%02hhx ", (unsigned char)*(buff + j + i));
+                }
+                fprintf(fp, "\n");
+            }
+
+            fclose(fp);
+        }
+    }
     else
     {
-        dwPriorityClass = GetPriorityClass(hProcess);
-        if (!dwPriorityClass)
-            printError(TEXT("GetPriorityClass"));
-        CloseHandle(hProcess);
+        printf("\nError! THGoat.exe not found!\n");
     }
-
-    _tprintf(TEXT("\n  Process ID        = 0x%08X"), pe32.th32ProcessID);
-    _tprintf(TEXT("\n  Thread count      = %d"), pe32.cntThreads);
-    _tprintf(TEXT("\n  Parent process ID = 0x%08X"), pe32.th32ParentProcessID);
-    _tprintf(TEXT("\n  Priority base     = %d"), pe32.pcPriClassBase);
-    if (dwPriorityClass)
-    {
-        _tprintf(TEXT("\n  Priority class    = %d"), dwPriorityClass);
-    }
-    // List the modules and threads associated with this process
-    ListProcessModules(pe32.th32ProcessID);
-    ListProcessThreads(pe32.th32ProcessID);
-
     return TRUE;
 
 
 }
+/*
+BOOL getMemoryData(void)
+{
 
+
+
+
+
+
+}
+*/
+
+// EVERYTHING BELOW IS NOT CURRENTLY USED BY THE MEM DUMPER BUT WILL BE INCLUDED AT A LATER DATE
 
 HANDLE getProcessList()
 {
