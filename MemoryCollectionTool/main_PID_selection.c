@@ -20,9 +20,9 @@ int main(void)
 	unsigned int selection = 0;
 
 
-	selection = menu();
+	//selection = menu();
 
-    //selection = 1;
+    selection = '1';
 	if (selection == '1')
 	{
 		printf("\n[+] Getting the list of processes now!\n");
