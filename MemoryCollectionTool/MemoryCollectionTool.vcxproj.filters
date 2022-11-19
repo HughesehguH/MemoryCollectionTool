@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main_PID_selection.c">
+    <ClCompile Include="main_PID_selection_CREATEFILE.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
